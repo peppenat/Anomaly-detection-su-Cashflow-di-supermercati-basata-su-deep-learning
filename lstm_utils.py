@@ -7,8 +7,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 # =========================================================
-# CATEGORICAL ENCODING
+# PREPROCESSING COMUNE
 # =========================================================
+
+# Codifica le feature categoriche una sola volta e conserva i mapping per l'inference.
 def encode_categorical(df, features):
     """
     Codifica tutte le feature categoriche (sia sequenziali che finali)
@@ -33,7 +35,20 @@ def encode_categorical(df, features):
 
     return df, mappings
 
+# Applica la trasformazione logaritmica prevista dallo schema delle feature.
+def log_transform(df, cols):
+    df = df.copy()
+    
+    for col in cols:
+        df[col] = np.log1p(df[col])
+        
+    return df
 
+# =========================================================
+# CREAZIONE DI SEQUENZE E FINESTRE
+# =========================================================
+
+# Costruisce esempi forecasting: finestra passata e target al tempo successivo.
 def create_sequences(df, features, window):
     """
     Trasforma un dataframe temporale in sequenze per LSTM.
@@ -92,7 +107,7 @@ def create_sequences(df, features, window):
         np.array(ground_truth, dtype=object),
     )
 
-
+# Costruisce finestre di ricostruzione per l'Autoencoder sales.
 def create_ae_windows(df, features, window_size):
     """
     Crea finestre per Autoencoder.
@@ -158,6 +173,54 @@ def create_ae_windows(df, features, window_size):
         "ground_truth": np.array(ground_truth, dtype=object)
     }
 
+# Versione POS delle finestre AE, con metadati riferiti al punto centrale.
+def create_pos_ae_windows(df, features, window_size):
+
+    X_seq_num = []
+    X_seq_bool = []
+    X_seq_cat = []
+    y = []
+    dates = []
+    store_ids = []
+    ground_truth = []
+
+    seq_num_vals = df[features["seq_num"]].values
+    seq_bool_vals = df[features["seq_bool"]].values
+    seq_cat_vals = df[features["seq_cat"]].values
+    target_vals = df[[features["target"]]].values
+    gt_vals = df[features["ground_truth"]].values
+    date_vals = df["date"].values
+    store_vals = df["store_id"].values
+
+    center_pos = window_size // 2
+
+    for i in range(len(df) - window_size + 1):
+
+        start = i
+        end = i + window_size
+        center = i + center_pos
+
+        X_seq_num.append(seq_num_vals[start:end])
+        X_seq_bool.append(seq_bool_vals[start:end])
+        X_seq_cat.append(seq_cat_vals[start:end])
+
+        y.append(target_vals[start:end])
+        ground_truth.append(gt_vals[start:end])
+
+        dates.append(date_vals[center])
+        store_ids.append(store_vals[center])
+
+    return {
+        "X_seq_num": np.array(X_seq_num, dtype=np.float32),
+        "X_seq_bool": np.array(X_seq_bool, dtype=np.float32),
+        "X_seq_cat": np.array(X_seq_cat, dtype=np.int32),
+        "y": np.array(y, dtype=np.float32),
+        "date": np.array(dates),
+        "store_id": np.array(store_ids, dtype=np.int32),
+        "ground_truth": np.array(ground_truth, dtype=object)
+    }
+
+# Accumula le sequenze di uno store nei container dello split corrente.
 def append_sequence_parts(container, seq):
     """
     Appende le sequenze generate in un container (train/val/test).
@@ -185,7 +248,7 @@ def append_sequence_parts(container, seq):
     container["date"].append(dates)
     container["ground_truth"].append(ground_truth)
 
-
+# Concatena i blocchi generati separatamente per store.
 def concatenate_parts(parts):
     """
     Concatena tutte le sequenze raccolte nei container
@@ -196,11 +259,11 @@ def concatenate_parts(parts):
         for key, values in parts.items()
     }
 
-
 # =========================================================
-# INPUT SPLITTING (PER MODELLO KERAS)
+# COSTRUZIONE DEGLI INPUT KERAS
 # =========================================================
 
+# Separa le categoriche sequenziali nell'ordine atteso dal modello sales.
 def split_seq_categorical(X_seq_cat):
     """
     Divide le feature categoriche sequenziali
@@ -216,7 +279,7 @@ def split_seq_categorical(X_seq_cat):
         X_seq_cat[:, :, 2],  # day
     ]
 
-
+# Separa le categoriche finali nell'ordine atteso dal modello sales.
 def split_categorical(X_cat):
     """
     Divide le feature categoriche finali
@@ -234,7 +297,7 @@ def split_categorical(X_cat):
         X_cat[:, 3],  # day
     ]
 
-
+# Input del modello forecasting sales.
 def build_model_inputs(split):
     """
     Costruisce la lista di input per il modello Sales LSTM aggiornato.
@@ -259,6 +322,7 @@ def build_model_inputs(split):
         split_categorical(X_cat)
     )
 
+# Ordine degli input coerente con build_lstm_pos_model.
 def build_pos_model_inputs(split):
     X_seq_num    = split["X_seq_num"]
     X_seq_bool   = split["X_seq_bool"]
@@ -279,47 +343,7 @@ def build_pos_model_inputs(split):
         X_cat[:, 2],          # month finale
     ]
 
-def build_mlp_electricity_inputs(split):
-    
-    X_num = split["X_num"]
-    X_cat = split["X_cat"]
-
-    return [
-        X_num,
-        X_cat[:, 0],  # store_id
-        X_cat[:, 1],  # pre_holiday
-        X_cat[:, 2]   # weekend
-    ]
-
-def build_mlp_logistics_inputs(data):
-    X_num = data["X_num"]
-    X_cat = data["X_cat"]
-
-    return [
-        X_num,
-        X_cat[:, 0],  # store_id
-        X_cat[:, 1],  # week_day
-        X_cat[:, 2],  # month
-        X_cat[:, 3],  # pre_holiday
-        X_cat[:, 4],  # actual_holiday
-        X_cat[:, 5],  # weekend
-    ]
-
-def build_mlp_waste_inputs(data):
-
-    X_num = data["X_num"]
-    X_cat = data["X_cat"]
-
-    return [
-        X_num,
-        X_cat[:, 0],  # store_id
-        X_cat[:, 1],  # week_day
-        X_cat[:, 2],  # month
-        X_cat[:, 3],  # pre_holiday
-        X_cat[:, 4],  # actual_holiday
-        X_cat[:, 5],  # weekend
-    ]
-
+# Input dell'Autoencoder sales.
 def build_sales_ae_inputs(data):
     """
     Costruisce la lista input per il modello AE.
@@ -342,6 +366,70 @@ def build_sales_ae_inputs(data):
         X_seq_cat[:, :, 3],  # store_id
     ]
 
+# Ordine degli input coerente con l'Autoencoder POS.
+def build_pos_ae_inputs(data):
+
+    X_seq_num = data["X_seq_num"]
+    X_seq_bool = data["X_seq_bool"]
+    X_seq_cat = data["X_seq_cat"]
+
+    return [
+        X_seq_num,
+        X_seq_bool,
+        X_seq_cat[:, :, 0],  # week_day
+        X_seq_cat[:, :, 1],  # month
+        X_seq_cat[:, :, 2]   # store_id
+    ]
+
+# Builder mantenuto per il modello MLP electricity.
+def build_mlp_electricity_inputs(split):
+    
+    X_num = split["X_num"]
+    X_cat = split["X_cat"]
+
+    return [
+        X_num,
+        X_cat[:, 0],  # store_id
+        X_cat[:, 1],  # pre_holiday
+        X_cat[:, 2]   # weekend
+    ]
+
+# Builder mantenuto per il modello MLP logistics.
+def build_mlp_logistics_inputs(data):
+    X_num = data["X_num"]
+    X_cat = data["X_cat"]
+
+    return [
+        X_num,
+        X_cat[:, 0],  # store_id
+        X_cat[:, 1],  # week_day
+        X_cat[:, 2],  # month
+        X_cat[:, 3],  # pre_holiday
+        X_cat[:, 4],  # actual_holiday
+        X_cat[:, 5],  # weekend
+    ]
+
+# Builder mantenuto per il modello MLP waste.
+def build_mlp_waste_inputs(data):
+
+    X_num = data["X_num"]
+    X_cat = data["X_cat"]
+
+    return [
+        X_num,
+        X_cat[:, 0],  # store_id
+        X_cat[:, 1],  # week_day
+        X_cat[:, 2],  # month
+        X_cat[:, 3],  # pre_holiday
+        X_cat[:, 4],  # actual_holiday
+        X_cat[:, 5],  # weekend
+    ]
+
+# =========================================================
+# RISULTATI E VISUALIZZAZIONE
+# =========================================================
+
+# Converte target e predizioni in risultati giornalieri, con inversione di scala opzionale.
 def make_results_df(split, y_pred, features, feature_scalers=None):
 
     y_pred = np.asarray(y_pred).reshape(-1)
@@ -420,17 +508,49 @@ def make_results_df(split, y_pred, features, feature_scalers=None):
 
     return results
 
+# Riassume gli errori di ricostruzione di ogni finestra AE.
+def make_ae_base_results_df(data, y_pred):
+    """
+    Results dataframe generico per Autoencoder.
+    Una riga = una finestra ricostruita.
+    """
 
+    y_true = data["y"]
+    y_pred = np.asarray(y_pred)
 
-def log_transform(df, cols):
-    df = df.copy()
-    
-    for col in cols:
-        df[col] = np.log1p(df[col])
-        
-    return df
+    errors = y_true - y_pred
 
+    window_size = y_true.shape[1]
+    center_pos = window_size // 2
 
+    results = pd.DataFrame({
+        "store_id": data["store_id"],
+        "center_date": pd.to_datetime(data["date"]),
+
+        "window_start": (
+            pd.to_datetime(data["date"])
+            - pd.to_timedelta(center_pos, unit="D")
+        ),
+
+        "window_end": (
+            pd.to_datetime(data["date"])
+            + pd.to_timedelta(window_size - center_pos - 1, unit="D")
+        ),
+
+        "ae_mse_score": np.mean(errors ** 2, axis=(1, 2)),
+        "ae_mae_score": np.mean(np.abs(errors), axis=(1, 2)),
+        "ae_max_abs_error": np.max(np.abs(errors), axis=(1, 2)),
+        "ae_signed_mean_error": np.mean(errors, axis=(1, 2)),
+
+        "y_true_center": y_true[:, center_pos, 0],
+        "y_pred_center": y_pred[:, center_pos, 0],
+        "center_error": errors[:, center_pos, 0],
+        "center_abs_error": np.abs(errors[:, center_pos, 0])
+    })
+
+    return results
+
+# Plot diagnostico delle predizioni sui tre split.
 def plot_pred_vs_true_splits(results_dict, sample_size=None):
     """
     Plot y_pred vs y_true per Train / Validation / Test.
@@ -480,8 +600,12 @@ def plot_pred_vs_true_splits(results_dict, sample_size=None):
     plt.suptitle("Predetto vs Reale - Train / Validation / Test")
     plt.tight_layout()
     plt.show()
-    
 
+# =========================================================
+# DATASET PER INFERENCE
+# =========================================================
+
+# Ricostruisce gli split sales usando mapping e scaler già salvati.
 def build_dataset_inference(
     df,
     feature_scalers,
@@ -659,7 +783,7 @@ def build_dataset_inference(
 
     return train, val, test
 
-
+# Ricostruisce gli split dell'AE sales senza rifare il fit del preprocessing.
 def build_sales_ae_dataset_inference(
     df,
     feature_scalers,
@@ -753,47 +877,7 @@ def build_sales_ae_dataset_inference(
 
     return train, val, test
 
-def make_ae_base_results_df(data, y_pred):
-    """
-    Results dataframe generico per Autoencoder.
-    Una riga = una finestra ricostruita.
-    """
-
-    y_true = data["y"]
-    y_pred = np.asarray(y_pred)
-
-    errors = y_true - y_pred
-
-    window_size = y_true.shape[1]
-    center_pos = window_size // 2
-
-    results = pd.DataFrame({
-        "store_id": data["store_id"],
-        "center_date": pd.to_datetime(data["date"]),
-
-        "window_start": (
-            pd.to_datetime(data["date"])
-            - pd.to_timedelta(center_pos, unit="D")
-        ),
-
-        "window_end": (
-            pd.to_datetime(data["date"])
-            + pd.to_timedelta(window_size - center_pos - 1, unit="D")
-        ),
-
-        "ae_mse_score": np.mean(errors ** 2, axis=(1, 2)),
-        "ae_mae_score": np.mean(np.abs(errors), axis=(1, 2)),
-        "ae_max_abs_error": np.max(np.abs(errors), axis=(1, 2)),
-        "ae_signed_mean_error": np.mean(errors, axis=(1, 2)),
-
-        "y_true_center": y_true[:, center_pos, 0],
-        "y_pred_center": y_pred[:, center_pos, 0],
-        "center_error": errors[:, center_pos, 0],
-        "center_abs_error": np.abs(errors[:, center_pos, 0])
-    })
-
-    return results
-
+# Ricostruisce gli split POS usando mapping e scaler già salvati.
 def build_dataset_pos_inference(
     df,
     feature_scalers,
@@ -947,6 +1031,11 @@ def build_dataset_pos_inference(
 
     return train, val, test
 
+# =========================================================
+# FINESTRE E VALUTAZIONE EVENT-LEVEL
+# =========================================================
+
+# Espande i punti rilevati in finestre e unisce gli intervalli sovrapposti.
 def build_weekday_contextual_detected_windows_from_center_points(
     df,
     detected_col="is_weekday_contextual_detected_raw",
@@ -1056,6 +1145,7 @@ def build_weekday_contextual_detected_windows_from_center_points(
 
     return pd.DataFrame(out)
 
+# Calcola la sovrapposizione temporale tra due intervalli chiusi.
 def interval_iou(start_a, end_a, start_b, end_b):
     """
     IoU temporale tra due intervalli chiusi [start, end].
@@ -1073,6 +1163,7 @@ def interval_iou(start_a, end_a, start_b, end_b):
 
     return inter / union if union > 0 else 0.0
 
+# Esegue il matching tra detection e ground truth a livello evento.
 def evaluate_detected_windows_event_level(
     gt_windows,
     detected_windows,
@@ -1227,6 +1318,7 @@ def evaluate_detected_windows_event_level(
 
     return gt_eval, det_eval, summary
 
+# Sintetizza il matching event-level per tipo di anomalia.
 def summarize_gt_eval_by_type(
     gt_eval,
     type_col="gt_type"
@@ -1258,74 +1350,11 @@ def summarize_gt_eval_by_type(
 
     return summary
 
-# %% AE windows
-
-def create_pos_ae_windows(df, features, window_size):
-
-    X_seq_num = []
-    X_seq_bool = []
-    X_seq_cat = []
-    y = []
-    dates = []
-    store_ids = []
-    ground_truth = []
-
-    seq_num_vals = df[features["seq_num"]].values
-    seq_bool_vals = df[features["seq_bool"]].values
-    seq_cat_vals = df[features["seq_cat"]].values
-    target_vals = df[[features["target"]]].values
-    gt_vals = df[features["ground_truth"]].values
-    date_vals = df["date"].values
-    store_vals = df["store_id"].values
-
-    center_pos = window_size // 2
-
-    for i in range(len(df) - window_size + 1):
-
-        start = i
-        end = i + window_size
-        center = i + center_pos
-
-        X_seq_num.append(seq_num_vals[start:end])
-        X_seq_bool.append(seq_bool_vals[start:end])
-        X_seq_cat.append(seq_cat_vals[start:end])
-
-        y.append(target_vals[start:end])
-        ground_truth.append(gt_vals[start:end])
-
-        dates.append(date_vals[center])
-        store_ids.append(store_vals[center])
-
-    return {
-        "X_seq_num": np.array(X_seq_num, dtype=np.float32),
-        "X_seq_bool": np.array(X_seq_bool, dtype=np.float32),
-        "X_seq_cat": np.array(X_seq_cat, dtype=np.int32),
-        "y": np.array(y, dtype=np.float32),
-        "date": np.array(dates),
-        "store_id": np.array(store_ids, dtype=np.int32),
-        "ground_truth": np.array(ground_truth, dtype=object)
-    }
-
-# %% Input builder AE POS
-
-def build_pos_ae_inputs(data):
-
-    X_seq_num = data["X_seq_num"]
-    X_seq_bool = data["X_seq_bool"]
-    X_seq_cat = data["X_seq_cat"]
-
-    return [
-        X_seq_num,
-        X_seq_bool,
-        X_seq_cat[:, :, 0],  # week_day
-        X_seq_cat[:, :, 1],  # month
-        X_seq_cat[:, :, 2]   # store_id
-    ]
-
 # =========================================================
-# DETECTOR SENSITIVITY
+# CONFIGURAZIONI DI SENSITIVITY
 # =========================================================
 
+# Genera configurazioni che modificano un solo parametro alla volta.
 def build_one_at_a_time_config_df(base_config, parameter_values):
     """
     Costruisce configurazioni one-at-a-time.
