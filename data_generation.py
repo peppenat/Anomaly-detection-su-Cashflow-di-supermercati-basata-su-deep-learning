@@ -166,9 +166,9 @@ def get_external_indices(
     consumer_prices_smooth = consumer_prices.interpolate(method='linear').bfill().ffill()
     df['consumer_prices'] = consumer_prices_smooth.values.flatten()
 
-    # ------------------------------------------------------------------
-    # Variabile - Food Price Index (FAO)
-    # ------------------------------------------------------------------
+    # Serie FRED PFOODINDEXM: Global Price of Food Index.
+    # La colonna storicamente è chiamata "fao", ma rappresenta un indice globale
+    # dei prezzi alimentari, non una serie FAO.
     fao = fred.get_series(
         'PFOODINDEXM',
         observation_start=start_date,
